@@ -1,0 +1,230 @@
+from __future__ import print_function
+import argparse
+import numpy as np
+import torch
+import torch.nn as nn
+import matplotlib.pyplot as plt
+import imageio
+import platform
+if platform.system() == 'Darwin':
+    import matplotlib
+    matplotlib.use('TkAgg')
+
+def toyNet():
+    # Define network architecture
+    class Generator(nn.Module):
+        def __init__(self):
+            super(Generator, self).__init__()
+            self.l1 = nn.Linear(2, 15)
+            self.l2 = nn.Linear(15, 15)
+            self.l3 = nn.Linear(15, 15)
+            self.relu = nn.ReLU(inplace=True)
+
+            for m in self.modules():
+                if isinstance(m, nn.Linear):
+                    nn.init.xavier_uniform_(m.weight)
+                    nn.init.constant_(m.bias, 0)
+
+        def forward(self, x):
+            x = self.relu(self.l1(x))
+            x = self.relu(self.l2(x))
+            x = self.relu(self.l3(x))
+            return x
+    class Classifier1(nn.Module):
+        def __init__(self):
+            super(Classifier1, self).__init__()
+            self.l1 = nn.Linear(15, 15)
+            self.l2 = nn.Linear(15, 15)
+            self.l3 = nn.Linear(15, 1)
+            self.relu = nn.ReLU(inplace=True)
+            self.sigmoid = nn.Sigmoid()
+
+            for m in self.modules():
+                if isinstance(m, nn.Linear):
+                    nn.init.xavier_uniform_(m.weight)
+                    nn.init.constant_(m.bias, 0)
+
+        def forward(self, x):
+            x = self.relu(self.l1(x))
+            x = self.relu(self.l2(x))
+            x = self.sigmoid(self.l3(x))
+            return x
+    class Classifier2(nn.Module):
+        def __init__(self):
+            super(Classifier2, self).__init__()
+            self.l1 = nn.Linear(15, 15)
+            self.l2 = nn.Linear(15, 15)
+            self.l3 = nn.Linear(15, 1)
+            self.relu = nn.ReLU(inplace=True)
+            self.sigmoid = nn.Sigmoid()
+
+            for m in self.modules():
+                if isinstance(m, nn.Linear):
+                    nn.init.xavier_uniform_(m.weight)
+                    nn.init.constant_(m.bias, 0)
+
+        def forward(self, x):
+            x = self.relu(self.l1(x))
+            x = self.relu(self.l2(x))
+            x = self.sigmoid(self.l3(x))
+            return x
+    return Generator(), Classifier1(), Classifier2()
+
+def discrepancy_slice_wasserstein(p1, p2):
+    s = p1.shape
+    if s[1]>1:
+        proj = torch.randn(s[1], 128)
+        proj *= torch.rsqrt(torch.sum(proj*proj, 0, keepdim=True))
+        p1 = torch.matmul(p1, proj)
+        p2 = torch.matmul(p2, proj)
+    t1 = torch.topk(p1, s[0], dim=0)[0]
+    t2 = torch.topk(p2, s[0], dim=0)[0]
+    return torch.nn.functional.mse_loss(t1, t2)
+    dist = t1-t2
+    wdist = torch.mean(dist*dist)
+    
+    return wdist    
+
+def discrepancy_mcd(out1, out2):
+    return torch.mean(torch.abs(out1 - out2))
+
+
+def load_data():
+    # Load inter twinning moons 2D dataset by F. Pedregosa et al. in JMLR 2011
+    moon_data = np.load('moon_data.npz')
+    x_s = moon_data['x_s']
+    y_s = moon_data['y_s']
+    x_t = moon_data['x_t']
+    return torch.from_numpy(x_s).float(), torch.from_numpy(y_s).float(), torch.from_numpy(x_t).float()
+
+
+def generate_grid_point():
+    x_min, x_max = x_s[:, 0].min() - .5, x_s[:, 0].max() + 0.5
+    y_min, y_max = x_s[:, 1].min() - .5, x_s[:, 1].max() + 0.5
+    xx, yy = np.meshgrid(np.arange(x_min, x_max, 0.01), np.arange(y_min, y_max, 0.01))
+    return xx, yy
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-mode', type=str, default="adapt_swd",
+                        choices=["source_only", "adapt_mcd", "adapt_swd"])
+    parser.add_argument('-seed', type=int, default=661)
+    opts = parser.parse_args()
+
+    # Load data
+    x_s, y_s, x_t = load_data()
+    print(x_s.shape, y_s.shape, x_t.shape)
+    print(torch.unique(y_s))
+
+    # set random seed
+    torch.manual_seed(opts.seed)
+
+    torch.backends.cudnn.enabled = True
+    torch.backends.cudnn.deterministic = True
+
+    # Network definition
+    generator, cls1, cls2 = toyNet()
+    generator.train()
+    cls1.train()
+    cls2.train()
+
+    # Cost functions
+    # bce_loss = nn.BCEWithLogitsLoss()
+    bce_loss = nn.BCELoss()
+
+    # Setup optimizers
+    optim_g = torch.optim.SGD(generator.parameters(), lr=0.005, momentum=0.9, weight_decay=5e-4)
+    optim_f = torch.optim.SGD(list(cls1.parameters())+list(cls2.parameters()), lr=0.005, momentum=0.9, weight_decay=5e-4)
+    optim_g.zero_grad()
+    optim_f.zero_grad()
+
+    # # Generate grid points for visualization
+    xx, yy = generate_grid_point()
+
+    # generator, cls1, cls2 = generator.cuda(), cls1.cuda(), cls2.cuda()
+    x_s1, y_s1, x_t1 = x_s.clone(), y_s.clone(), x_t.clone()
+    print(x_s.requires_grad,y_s.requires_grad)
+    # x_s, y_s, x_t = x_s.cuda(), y_s.cuda(), x_t.cuda()
+
+    # # For creating GIF purpose
+    gif_images = []
+
+    eps = 1e-05
+
+    for step in range(10001):
+        if step%1000==0:
+            print("Iteration: %d / %d" % (step, 10000))
+            z = torch.from_numpy(np.c_[xx.ravel(), yy.ravel()]).float()
+            # z = z.cuda()
+            # print(z.shape)
+            with torch.no_grad():
+                fea = generator(z)
+                Z = (cls2(fea).cpu().numpy()>0.5).astype(np.float32)
+            Z = Z.reshape(xx.shape)
+            f = plt.figure()
+            plt.contourf(xx, yy, Z, cmap=plt.cm.copper_r, alpha=0.9)
+            plt.scatter(x_s1[:, 0], x_s1[:, 1], c=y_s1.reshape((len(x_s1))),
+                        cmap=plt.cm.coolwarm, alpha=0.8)
+            plt.scatter(x_t1[:, 0], x_t1[:, 1], color='green', alpha=0.7)
+            plt.text(1.6, -0.9, 'Iter: ' + str(step), fontsize=14, color='#FFD700',
+                     bbox=dict(facecolor='dimgray', alpha=0.7))
+            plt.axis('off')
+            f.savefig(opts.mode + '_pytorch_iter' + str(step) + ".png", bbox_inches='tight',
+                      pad_inches=0, dpi=100, transparent=True)
+            # f.savefig(opts.mode + '_pytorch_iter' + str(opts.seed) + ".png", bbox_inches='tight',
+            #           pad_inches=0, dpi=100, transparent=True)
+            gif_images.append(imageio.imread(
+                              opts.mode + '_pytorch_iter' + str(step) + ".png"))
+            plt.close()
+
+        optim_g.zero_grad()
+        optim_f.zero_grad()
+        fea = generator(x_s)
+        pred1 = cls1(fea)
+        pred2 = cls2(fea)
+        loss_s = bce_loss(pred1, y_s) + bce_loss(pred2, y_s)
+        loss_s.backward()
+        optim_g.step()
+        optim_f.step()
+
+        if opts.mode == 'source_only':
+            continue
+        
+        optim_g.zero_grad()
+        optim_f.zero_grad()
+        loss = 0
+        src_fea = generator(x_s)
+        src_fea = src_fea.detach()
+        src_pred1 = cls1(src_fea)
+        src_pred2 = cls2(src_fea)
+        loss += bce_loss(src_pred1, y_s) + bce_loss(src_pred2, y_s)
+        # loss_s.backward()
+
+        tgt_fea = generator(x_t)
+        tgt_fea = tgt_fea.detach()
+        tgt_pred1 = cls1(tgt_fea)
+        tgt_pred2 = cls2(tgt_fea)
+        if opts.mode == 'adapt_swd':
+            loss_dis = discrepancy_slice_wasserstein(tgt_pred1, tgt_pred2)
+        else:
+            loss_dis = discrepancy_mcd(tgt_pred1, tgt_pred2)
+        loss -= loss_dis
+        loss.backward()
+        optim_f.step()
+
+        optim_g.zero_grad()
+        tgt_fea = generator(x_t)
+        tgt_pred1 = cls1(tgt_fea)
+        tgt_pred2 = cls2(tgt_fea)
+        if opts.mode == 'adapt_swd':
+            loss_dis = discrepancy_slice_wasserstein(tgt_pred1, tgt_pred2)
+        else:
+            loss_dis = discrepancy_mcd(tgt_pred1, tgt_pred2)
+        loss_dis.backward()
+        optim_g.step()
+        # break
+    
+    # Save GIF
+    imageio.mimsave(opts.mode + '_pytorch.gif', gif_images, duration=0.8)
+    print("[Finished]\n-> Please see the current folder for outputs.")
