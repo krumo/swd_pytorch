@@ -74,16 +74,15 @@ def discrepancy_slice_wasserstein(p1, p2):
     s = p1.shape
     if s[1]>1:
         proj = torch.randn(s[1], 128)
-        proj *= torch.rsqrt(torch.sum(proj*proj, 0, keepdim=True))
+        proj *= torch.rsqrt(torch.sum(torch.mul(proj, proj), 0, keepdim=True))
         p1 = torch.matmul(p1, proj)
         p2 = torch.matmul(p2, proj)
-    t1 = torch.topk(p1, s[0], dim=0)[0]
-    t2 = torch.topk(p2, s[0], dim=0)[0]
-    return torch.nn.functional.mse_loss(t1, t2)
-    dist = t1-t2
-    wdist = torch.mean(dist*dist)
+    p1 = torch.topk(p1, s[0], dim=0)[0]
+    p2 = torch.topk(p2, s[0], dim=0)[0]
+    dist = p1-p2
+    wdist = torch.mean(torch.mul(dist, dist))
     
-    return wdist    
+    return wdist
 
 def discrepancy_mcd(out1, out2):
     return torch.mean(torch.abs(out1 - out2))
@@ -109,13 +108,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('-mode', type=str, default="adapt_swd",
                         choices=["source_only", "adapt_mcd", "adapt_swd"])
-    parser.add_argument('-seed', type=int, default=661)
+    parser.add_argument('-seed', type=int, default=1234)
     opts = parser.parse_args()
 
     # Load data
     x_s, y_s, x_t = load_data()
-    print(x_s.shape, y_s.shape, x_t.shape)
-    print(torch.unique(y_s))
 
     # set random seed
     torch.manual_seed(opts.seed)
@@ -130,50 +127,38 @@ if __name__ == "__main__":
     cls2.train()
 
     # Cost functions
-    # bce_loss = nn.BCEWithLogitsLoss()
     bce_loss = nn.BCELoss()
 
     # Setup optimizers
-    optim_g = torch.optim.SGD(generator.parameters(), lr=0.005, momentum=0.9, weight_decay=5e-4)
-    optim_f = torch.optim.SGD(list(cls1.parameters())+list(cls2.parameters()), lr=0.005, momentum=0.9, weight_decay=5e-4)
+    optim_g = torch.optim.SGD(generator.parameters(), lr=0.005)
+    optim_f = torch.optim.SGD(list(cls1.parameters())+list(cls2.parameters()), lr=0.005)
     optim_g.zero_grad()
     optim_f.zero_grad()
 
     # # Generate grid points for visualization
     xx, yy = generate_grid_point()
 
-    # generator, cls1, cls2 = generator.cuda(), cls1.cuda(), cls2.cuda()
-    x_s1, y_s1, x_t1 = x_s.clone(), y_s.clone(), x_t.clone()
-    print(x_s.requires_grad,y_s.requires_grad)
-    # x_s, y_s, x_t = x_s.cuda(), y_s.cuda(), x_t.cuda()
-
-    # # For creating GIF purpose
+    # For creating GIF purpose
     gif_images = []
-
-    eps = 1e-05
 
     for step in range(10001):
         if step%1000==0:
             print("Iteration: %d / %d" % (step, 10000))
             z = torch.from_numpy(np.c_[xx.ravel(), yy.ravel()]).float()
-            # z = z.cuda()
-            # print(z.shape)
             with torch.no_grad():
                 fea = generator(z)
                 Z = (cls2(fea).cpu().numpy()>0.5).astype(np.float32)
             Z = Z.reshape(xx.shape)
             f = plt.figure()
             plt.contourf(xx, yy, Z, cmap=plt.cm.copper_r, alpha=0.9)
-            plt.scatter(x_s1[:, 0], x_s1[:, 1], c=y_s1.reshape((len(x_s1))),
+            plt.scatter(x_s[:, 0], x_s[:, 1], c=y_s.reshape((len(x_s))),
                         cmap=plt.cm.coolwarm, alpha=0.8)
-            plt.scatter(x_t1[:, 0], x_t1[:, 1], color='green', alpha=0.7)
+            plt.scatter(x_t[:, 0], x_t[:, 1], color='green', alpha=0.7)
             plt.text(1.6, -0.9, 'Iter: ' + str(step), fontsize=14, color='#FFD700',
                      bbox=dict(facecolor='dimgray', alpha=0.7))
             plt.axis('off')
             f.savefig(opts.mode + '_pytorch_iter' + str(step) + ".png", bbox_inches='tight',
                       pad_inches=0, dpi=100, transparent=True)
-            # f.savefig(opts.mode + '_pytorch_iter' + str(opts.seed) + ".png", bbox_inches='tight',
-            #           pad_inches=0, dpi=100, transparent=True)
             gif_images.append(imageio.imread(
                               opts.mode + '_pytorch_iter' + str(step) + ".png"))
             plt.close()
@@ -206,7 +191,7 @@ if __name__ == "__main__":
         tgt_pred1 = cls1(tgt_fea)
         tgt_pred2 = cls2(tgt_fea)
         if opts.mode == 'adapt_swd':
-            loss_dis = discrepancy_slice_wasserstein(tgt_pred1, tgt_pred2)
+            loss_dis = 2*discrepancy_slice_wasserstein(tgt_pred1, tgt_pred2)
         else:
             loss_dis = discrepancy_mcd(tgt_pred1, tgt_pred2)
         loss -= loss_dis
@@ -223,7 +208,6 @@ if __name__ == "__main__":
             loss_dis = discrepancy_mcd(tgt_pred1, tgt_pred2)
         loss_dis.backward()
         optim_g.step()
-        # break
     
     # Save GIF
     imageio.mimsave(opts.mode + '_pytorch.gif', gif_images, duration=0.8)
