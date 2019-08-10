@@ -17,12 +17,12 @@ This code is tested under Ubuntu 16.04 with Python 3.6 and PyTorch 1.1.0. A GPU 
 ## Running the code
 To run the demo with adaptation:
 ```
-python swd.py -mode adapt_swd
+python swd_pytorch.py -mode adapt_swd
 ```
 
 To run the demo without adaptation:
 ```
-python swd.py -mode source_only
+python swd_pytorch.py -mode source_only
 ```
 
 ## Interpreting Outputs
@@ -30,7 +30,7 @@ Outputs will be saved as png and gif files in the current folder for each mode.
 The outputs show the source and target samples with the current decision boundary. Blue and red points are source samples of class 0
 and 1. Target samples are represented by green points.
 &nbsp;<br />
-<img src="assets/adapt_swd_pytorch.gif" height="200">
+<img src="assets/outputs.gif" height="200">
 
 ## Acknowledgement
 [ml-cvpr2019-swd](https://github.com/apple/ml-cvpr2019-swd) (Official implementation in Tensorflow)
